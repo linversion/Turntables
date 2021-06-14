@@ -12,6 +12,7 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.ImageReader.OnImageAvailableListener
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
@@ -21,12 +22,10 @@ import android.os.Message
 import android.util.Log
 import android.view.*
 import android.widget.TextView
-import com.linversion.turntables.R
 import com.linversion.turntables.util.Hash
 import com.linversion.turntables.util.RecorderFakeUtils
 
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.util.*
 
@@ -50,6 +49,7 @@ class ScreenCaptureService : Service() {
     private var tvDuration: TextView? = null
     private var timer: Timer? = null
     private var second = 0
+    private var recorder: MediaRecorder? = null
 
     private val handler: Handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
@@ -62,40 +62,25 @@ class ScreenCaptureService : Service() {
 
     private inner class ImageAvailableListener : OnImageAvailableListener {
         override fun onImageAvailable(reader: ImageReader) {
-            val fos: FileOutputStream? = null
             var bitmap: Bitmap? = null
             try {
-                mImageReader!!.acquireLatestImage().use { image ->
-                    if (image != null) {
-                        val planes = image.planes
-                        val buffer = planes[0].buffer
-                        val pixelStride = planes[0].pixelStride
-                        val rowStride = planes[0].rowStride
-                        val rowPadding = rowStride - pixelStride * mWidth
+                mImageReader!!.acquireLatestImage()?.run {
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * mWidth
 
-                        // create bitmap
-                        bitmap = Bitmap.createBitmap(mWidth + rowPadding / pixelStride, mHeight, Bitmap.Config.ARGB_8888)
-                        bitmap!!.copyPixelsFromBuffer(buffer)
+                    // create bitmap
+                    bitmap = Bitmap.createBitmap(mWidth + rowPadding / pixelStride, mHeight, Bitmap.Config.ARGB_8888)
+                    bitmap!!.copyPixelsFromBuffer(buffer)
 
-                        // write bitmap to a file
-//                    fos = new FileOutputStream(mStoreDir + "/myscreen_" + IMAGES_PRODUCED + ".png");
-//                    bitmap.compress(Bitmap.CompressFormat.JPEG, 100, fos);
-                        val hash = Hash.dHash(bitmap, true)
-                        Log.i(TAG, "getOrCreateVirtualDisplay: hash = $hash")
-                        IMAGES_PRODUCED++
-                        Log.e(TAG, "captured image: " + IMAGES_PRODUCED)
-                    }
+                    val hash = Hash.dHash(bitmap, true)
+                    Log.i(TAG, "onImageAvailable: hash = $hash")
+                    close()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                if (fos != null) {
-                    try {
-                        fos.close()
-                    } catch (ioe: IOException) {
-                        ioe.printStackTrace()
-                    }
-                }
                 if (bitmap != null) {
                     bitmap!!.recycle()
                 }
@@ -103,7 +88,8 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private inner class OrientationChangeCallback internal constructor(context: Context?) : OrientationEventListener(context) {
+    private inner class OrientationChangeCallback internal constructor(context: Context?)
+        : OrientationEventListener(context) {
         override fun onOrientationChanged(orientation: Int) {
             val rotation = mDisplay!!.rotation
             if (rotation != mRotation) {
@@ -135,14 +121,16 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onBind(intent: Intent): IBinder? {
-//        initWindow()
-//        initListener()
-//        initTimer()
+        Log.i(TAG, "onBind: ")
         return null
     }
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "onCreate: ")
+//        initWindow()
+//        initListener()
+//        initTimer()
 
         // create store dir
         val externalFilesDir = getExternalFilesDir(null)
@@ -172,6 +160,7 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand: ")
         if (isStartCommand(intent)) {
             // create notification
             val notification = NotificationUtils.getNotification(this)
@@ -191,6 +180,7 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.i(TAG, "onDestroy: ")
         windowManager?.removeView(viewParent)
     }
 
@@ -213,8 +203,8 @@ class ScreenCaptureService : Service() {
         windowParam!!.height = WindowManager.LayoutParams.WRAP_CONTENT
         windowParam!!.gravity = Gravity.START or Gravity.TOP
 
-        windowParam!!.title = RecorderFakeUtils.getFakeRecordWindowTitle()
-        if (RecorderFakeUtils.isMiui()) {
+        windowParam!!.title = RecorderFakeUtils.fakeRecordWindowTitle
+        if (RecorderFakeUtils.isMiui) {
             windowParam!!.flags = 4136
         }
     }
@@ -237,8 +227,34 @@ class ScreenCaptureService : Service() {
     }
 
     private fun initTimer() {
+        timer?.let {
+            it.cancel()
+            it.purge()
+        }
         timer = Timer()
     }
+
+//    private fun initMediaRecorder() {
+//        if (recorder == null) {
+//            recorder = MediaRecorder().apply {
+//                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+//                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+//                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+//                setVideoSize(mWidth, mHeight)
+//                setVideoEncodingBitRate(800)
+//                setVideoFrameRate(60)
+//            }
+//            recorder.setInputSurface()
+//        } else {
+//            recorder!!.reset()
+//        }
+////        recorder.setOutputFile()
+//        try {
+//            recorder!!.prepare()
+//        } catch (e: IOException) {
+//            e.printStackTrace()
+//        }
+//    }
 
     private fun onTimer() {
         if (!isActive) {
@@ -283,8 +299,6 @@ class ScreenCaptureService : Service() {
                 // register media projection stop callback
                 mMediaProjection!!.registerCallback(MediaProjectionStopCallback(), mHandler)
             }
-        } else {
-
         }
     }
 
