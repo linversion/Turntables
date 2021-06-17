@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -24,16 +25,16 @@ import android.view.*
 import android.widget.TextView
 import com.linversion.turntables.util.Hash
 import com.linversion.turntables.util.RecorderFakeUtils
-
-import java.io.File
 import java.io.IOException
 import java.util.*
 
 class ScreenCaptureService : Service() {
+    private var mpManager: MediaProjectionManager? = null
     private var mMediaProjection: MediaProjection? = null
     private var mStoreDir: String? = null
     private var mImageReader: ImageReader? = null
     private var mHandler: Handler? = null
+
     //判断屏幕方向用
     private var mDisplay: Display? = null
     private var mVirtualDisplay: VirtualDisplay? = null
@@ -42,14 +43,26 @@ class ScreenCaptureService : Service() {
     private var mHeight = 0
     private var mRotation = 0
     private var mOrientationChangeCallback: OrientationChangeCallback? = null
+
     private var windowManager: WindowManager? = null
     private var windowParam: WindowManager.LayoutParams? = null
+
     private var viewParent: View? = null
     private var tvAction: TextView? = null
     private var tvDuration: TextView? = null
+    private var tvFps: TextView? = null
+    private var tvAllFrame: TextView? = null
+
     private var timer: Timer? = null
     private var second = 0
-    private var recorder: MediaRecorder? = null
+    private var mData: Intent? = null
+    private var mCode: Int = 0
+    private var isActive = false
+    private var firstTime = true
+    private var startTime: Long = 0
+
+    //计算
+    private var frameCount = 0
 
     private val handler: Handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
@@ -65,17 +78,20 @@ class ScreenCaptureService : Service() {
             var bitmap: Bitmap? = null
             try {
                 mImageReader!!.acquireLatestImage()?.run {
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * mWidth
+                    if (isActive) {
+                        frameCount++
+                        val buffer = planes[0].buffer
+                        val pixelStride = planes[0].pixelStride
+                        val rowStride = planes[0].rowStride
+                        val rowPadding = rowStride - pixelStride * mWidth
 
-                    // create bitmap
-                    bitmap = Bitmap.createBitmap(mWidth + rowPadding / pixelStride, mHeight, Bitmap.Config.ARGB_8888)
-                    bitmap!!.copyPixelsFromBuffer(buffer)
+                        // create bitmap
+                        bitmap = Bitmap.createBitmap(mWidth + rowPadding / pixelStride, mHeight, Bitmap.Config.ARGB_8888)
+                        bitmap!!.copyPixelsFromBuffer(buffer)
 
-                    val hash = Hash.dHash(bitmap, true)
-                    Log.i(TAG, "onImageAvailable: hash = $hash")
+                        val hash = Hash.dHash(bitmap, true)
+                        Log.i(TAG, "onImageAvailable: hash = $hash")
+                    }
                     close()
                 }
             } catch (e: Exception) {
@@ -122,32 +138,36 @@ class ScreenCaptureService : Service() {
 
     override fun onBind(intent: Intent): IBinder? {
         Log.i(TAG, "onBind: ")
+        val notification = NotificationUtils.getNotification(this)
+        startForeground(notification.first, notification.second)
+        mCode = intent.getIntExtra(RESULT_CODE, Activity.RESULT_CANCELED)
+        mData = intent.getParcelableExtra(DATA)
+
+        initWindow()
+        initListener()
         return null
     }
 
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "onCreate: ")
-//        initWindow()
-//        initListener()
-//        initTimer()
 
         // create store dir
-        val externalFilesDir = getExternalFilesDir(null)
-        if (externalFilesDir != null) {
-            mStoreDir = externalFilesDir.absolutePath + "/screenshots/"
-            val storeDirectory = File(mStoreDir!!)
-            if (!storeDirectory.exists()) {
-                val success = storeDirectory.mkdirs()
-                if (!success) {
-                    Log.e(TAG, "failed to create file storage directory.")
-                    stopSelf()
-                }
-            }
-        } else {
-            Log.e(TAG, "failed to create file storage directory, getExternalFilesDir is null.")
-            stopSelf()
-        }
+//        val externalFilesDir = getExternalFilesDir(null)
+//        if (externalFilesDir != null) {
+//            mStoreDir = externalFilesDir.absolutePath + "/screenshots/"
+//            val storeDirectory = File(mStoreDir!!)
+//            if (!storeDirectory.exists()) {
+//                val success = storeDirectory.mkdirs()
+//                if (!success) {
+//                    Log.e(TAG, "failed to create file storage directory.")
+//                    stopSelf()
+//                }
+//            }
+//        } else {
+//            Log.e(TAG, "failed to create file storage directory, getExternalFilesDir is null.")
+//            stopSelf()
+//        }
 
         // start capture handling thread
         object : Thread() {
@@ -161,21 +181,13 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ")
-        if (isStartCommand(intent)) {
-            // create notification
-            val notification = NotificationUtils.getNotification(this)
-            startForeground(notification.first, notification.second)
-            // start projection
-            val resultCode = intent.getIntExtra(RESULT_CODE, Activity.RESULT_CANCELED)
-            val data = intent.getParcelableExtra<Intent>(DATA)
-            startProjection(resultCode, data)
-        } else if (isStopCommand(intent)) {
-            stopProjection()
-            stopSelf()
-        } else {
-            stopSelf()
-        }
-        return START_NOT_STICKY
+
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        stopProjection()
+        return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
@@ -212,18 +224,32 @@ class ScreenCaptureService : Service() {
     private fun initListener() {
         tvAction = viewParent!!.findViewById(R.id.btn_action)
         tvDuration = viewParent!!.findViewById(R.id.tv_duration)
+        tvFps = viewParent!!.findViewById(R.id.tv_fps)
+        tvAllFrame = viewParent!!.findViewById(R.id.tv_all_frames_count)
 
         tvAction!!.setOnClickListener {
             isActive = !isActive
-            tvAction!!.text = if (isActive) getString(R.string.start) else getString(R.string.end)
+            tvAction!!.text = if (isActive) getString(R.string.end) else getString(R.string.start)
 
-            if (isActive) {
-//                startProjection()
+            if (isActive && firstTime) {
+                startProjection(mCode, mData)
+                startTime = System.currentTimeMillis()
+                firstTime = false
+            } else if (isActive) {
+                startTime = System.currentTimeMillis()
             } else {
-                stopProjection()
+                calFps()
             }
             onTimer()
         }
+    }
+
+    private fun calFps() {
+        val dur = (System.currentTimeMillis() - startTime) / 1000
+        val fps = frameCount / dur
+        tvAllFrame?.text = "All Frames=$frameCount"
+        frameCount = 0
+        tvFps?.text = "FPS=$fps"
     }
 
     private fun initTimer() {
@@ -233,28 +259,6 @@ class ScreenCaptureService : Service() {
         }
         timer = Timer()
     }
-
-//    private fun initMediaRecorder() {
-//        if (recorder == null) {
-//            recorder = MediaRecorder().apply {
-//                setVideoSource(MediaRecorder.VideoSource.SURFACE)
-//                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-//                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-//                setVideoSize(mWidth, mHeight)
-//                setVideoEncodingBitRate(800)
-//                setVideoFrameRate(60)
-//            }
-//            recorder.setInputSurface()
-//        } else {
-//            recorder!!.reset()
-//        }
-////        recorder.setOutputFile()
-//        try {
-//            recorder!!.prepare()
-//        } catch (e: IOException) {
-//            e.printStackTrace()
-//        }
-//    }
 
     private fun onTimer() {
         if (!isActive) {
@@ -277,9 +281,11 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startProjection(resultCode: Int, data: Intent?) {
-        val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        if (mpManager == null) {
+            mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        }
         if (mMediaProjection == null) {
-            mMediaProjection = mpManager.getMediaProjection(resultCode, data!!)
+            mMediaProjection = mpManager!!.getMediaProjection(resultCode, data!!)
             if (mMediaProjection != null) {
                 // display metrics
 //                mDensity = Resources.getSystem().displayMetrics.densityDpi
@@ -303,25 +309,21 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopProjection() {
-        if (mHandler != null) {
-            mHandler!!.post {
-                if (mMediaProjection != null) {
-                    mMediaProjection!!.stop()
-                }
-            }
-        }
+//        mHandler?.post {
+//            mMediaProjection?.stop()
+//        }
+        mMediaProjection?.stop()
     }
 
-    @SuppressLint("WrongConstant")
     private fun createVirtualDisplay() {
         // get width and height
         mWidth = Resources.getSystem().displayMetrics.widthPixels
         mHeight = Resources.getSystem().displayMetrics.heightPixels
-
         // start capture reader
         mImageReader = ImageReader.newInstance(mWidth, mHeight, PixelFormat.RGBA_8888, 2)
         mVirtualDisplay = mMediaProjection!!.createVirtualDisplay(SCREENCAP_NAME, mWidth, mHeight,
                 mDensity, virtualDisplayFlags, mImageReader!!.surface, null, mHandler)
+
         mImageReader!!.setOnImageAvailableListener(ImageAvailableListener(), mHandler)
     }
 
@@ -329,38 +331,13 @@ class ScreenCaptureService : Service() {
         private const val TAG = "ScreenCaptureService"
         private const val RESULT_CODE = "RESULT_CODE"
         private const val DATA = "DATA"
-        private const val ACTION = "ACTION"
-        private const val START = "START"
-        private const val STOP = "STOP"
         private const val SCREENCAP_NAME = "screencap"
-        private var IMAGES_PRODUCED = 0
-        // To control toggle button in MainActivity. This is not elegant but works.
-        var isActive = false
-            private set
 
-        @JvmStatic
-        fun getStartIntent(context: Context?, resultCode: Int, data: Intent?): Intent {
+        fun start(context: Context, connection: ServiceConnection, resultCode: Int, data: Intent?) {
             val intent = Intent(context, ScreenCaptureService::class.java)
-            intent.putExtra(ACTION, START)
             intent.putExtra(RESULT_CODE, resultCode)
             intent.putExtra(DATA, data)
-            return intent
-        }
-
-        @JvmStatic
-        fun getStopIntent(context: Context?): Intent {
-            val intent = Intent(context, ScreenCaptureService::class.java)
-            intent.putExtra(ACTION, STOP)
-            return intent
-        }
-
-        private fun isStartCommand(intent: Intent): Boolean {
-            return (intent.hasExtra(RESULT_CODE) && intent.hasExtra(DATA)
-                    && intent.hasExtra(ACTION) && intent.getStringExtra(ACTION) == START)
-        }
-
-        private fun isStopCommand(intent: Intent): Boolean {
-            return intent.hasExtra(ACTION) && intent.getStringExtra(ACTION) == STOP
+            context.bindService(intent, connection, BIND_AUTO_CREATE)
         }
 
         private val virtualDisplayFlags: Int
