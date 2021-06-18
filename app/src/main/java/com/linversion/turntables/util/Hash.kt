@@ -70,11 +70,39 @@ object Hash {
         val h = 9
         //缩放图片
         val bitmap = scaleBitmap(src, recycle, w.toFloat(), h.toFloat())
-        //获取灰度图
-        val pixels = createGrayImage(bitmap, w, h)
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        bitmap.recycle()
+        
         val res = calDHash(pixels, w)
         Log.i(TAG, "dHash: 耗时" + (System.currentTimeMillis() - start))
         return res
+    }
+
+    fun aHash(src: Bitmap) : String {
+        val start = System.currentTimeMillis()
+        val w = 8
+        val h = 8
+        //缩放图片
+        val bitmap = scaleBitmap(src, true, w.toFloat(), h.toFloat())
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        bitmap.recycle()
+        
+        val res = calAHash(pixels, w)
+        Log.i(TAG, "dHash: 耗时" + (System.currentTimeMillis() - start))
+        return res
+    }
+
+    private fun calAHash(pixels: IntArray, w: Int): String {
+        val average = pixels.sum() / pixels.size.toFloat()
+        val d = ByteArray(w * w)
+        var index = 0
+        for (e in pixels) {
+            //转换成0 1
+            d[index++] = (if (e >= average) 1 else 0).toByte()
+        }
+        return bytesToHex01(d)
     }
 
     private fun createGrayImage(src: Bitmap, w: Int, h: Int): IntArray {
