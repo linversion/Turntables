@@ -1,6 +1,5 @@
 package com.linversion.turntables;
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Service
 import android.content.Context
@@ -13,7 +12,6 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.ImageReader.OnImageAvailableListener
-import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
@@ -25,7 +23,6 @@ import android.view.*
 import android.widget.TextView
 import com.linversion.turntables.util.Hash
 import com.linversion.turntables.util.RecorderFakeUtils
-import java.io.IOException
 import java.util.*
 
 class ScreenCaptureService : Service() {
@@ -63,6 +60,9 @@ class ScreenCaptureService : Service() {
 
     //计算
     private var frameCount = 0
+    private var bigFreezeCount = 0f
+    private var lastHash: String? = null
+    private var hitTime = 0
 
     private val handler: Handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
@@ -86,10 +86,26 @@ class ScreenCaptureService : Service() {
                         val rowPadding = rowStride - pixelStride * mWidth
 
                         // create bitmap
-                        bitmap = Bitmap.createBitmap(mWidth + rowPadding / pixelStride, mHeight, Bitmap.Config.ARGB_8888)
+                        bitmap = Bitmap.createBitmap(
+                            mWidth + rowPadding / pixelStride,
+                            mHeight,
+                            Bitmap.Config.ARGB_8888
+                        )
                         bitmap!!.copyPixelsFromBuffer(buffer)
 
                         val hash = Hash.dHash(bitmap, true)
+                        //记录平均1s大卡顿相关数据
+                        if (hash == lastHash) {
+                            //跟上次的hash相等
+                            hitTime++
+                        } else if (hitTime != 0) {
+                            //记录到一次三帧一样
+                            if (hitTime >= 2) {
+                                bigFreezeCount++
+                            }
+                            hitTime = 0;
+                        }
+                        lastHash = hash
                         Log.i(TAG, "onImageAvailable: hash = $hash")
                     }
                     close()
@@ -104,8 +120,8 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private inner class OrientationChangeCallback internal constructor(context: Context?)
-        : OrientationEventListener(context) {
+    private inner class OrientationChangeCallback internal constructor(context: Context?) :
+        OrientationEventListener(context) {
         override fun onOrientationChanged(orientation: Int) {
             val rotation = mDisplay!!.rotation
             if (rotation != mRotation) {
@@ -207,9 +223,10 @@ class ScreenCaptureService : Service() {
         windowParam = WindowManager.LayoutParams()
         windowParam!!.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         //设置可以显示在状态栏上
-        windowParam!!.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+        windowParam!!.flags =
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         //设置悬浮窗口长宽
         windowParam!!.width = WindowManager.LayoutParams.MATCH_PARENT
         windowParam!!.height = WindowManager.LayoutParams.WRAP_CONTENT
@@ -244,12 +261,19 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    /**
+     * 计算平均FPS
+     */
     private fun calFps() {
         val dur = (System.currentTimeMillis() - startTime) / 1000
         val fps = frameCount / dur
         tvAllFrame?.text = "All Frames=$frameCount"
         frameCount = 0
-        tvFps?.text = "FPS=$fps"
+        //计算平均一秒大卡顿次数
+        //总大卡顿次数 / 总时间
+        val freezeRate = bigFreezeCount / dur
+        Log.i(TAG, "calFps: bigFreezecount$bigFreezeCount")
+        tvFps?.text = "FPS=$fps/$freezeRate"
     }
 
     private fun initTimer() {
@@ -321,8 +345,10 @@ class ScreenCaptureService : Service() {
         mHeight = Resources.getSystem().displayMetrics.heightPixels
         // start capture reader
         mImageReader = ImageReader.newInstance(mWidth, mHeight, PixelFormat.RGBA_8888, 2)
-        mVirtualDisplay = mMediaProjection!!.createVirtualDisplay(SCREENCAP_NAME, mWidth, mHeight,
-                mDensity, virtualDisplayFlags, mImageReader!!.surface, null, mHandler)
+        mVirtualDisplay = mMediaProjection!!.createVirtualDisplay(
+            SCREENCAP_NAME, mWidth, mHeight,
+            mDensity, virtualDisplayFlags, mImageReader!!.surface, null, mHandler
+        )
 
         mImageReader!!.setOnImageAvailableListener(ImageAvailableListener(), mHandler)
     }
