@@ -1,5 +1,6 @@
 package com.linversion.turntables;
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Service
 import android.content.Context
@@ -28,7 +29,6 @@ import java.util.*
 class ScreenCaptureService : Service() {
     private var mpManager: MediaProjectionManager? = null
     private var mMediaProjection: MediaProjection? = null
-    private var mStoreDir: String? = null
     private var mImageReader: ImageReader? = null
     private var mHandler: Handler? = null
 
@@ -63,6 +63,7 @@ class ScreenCaptureService : Service() {
     private var bigFreezeCount = 0f
     private var lastHash: String? = null
     private var hitTime = 0
+    private var bitmap: Bitmap? = null
 
     private val handler: Handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
@@ -75,7 +76,6 @@ class ScreenCaptureService : Service() {
 
     private inner class ImageAvailableListener : OnImageAvailableListener {
         override fun onImageAvailable(reader: ImageReader) {
-            var bitmap: Bitmap? = null
             try {
                 mImageReader!!.acquireLatestImage()?.run {
                     if (isActive) {
@@ -85,15 +85,18 @@ class ScreenCaptureService : Service() {
                         val rowStride = planes[0].rowStride
                         val rowPadding = rowStride - pixelStride * mWidth
 
-                        // create bitmap
-                        bitmap = Bitmap.createBitmap(
-                            mWidth + rowPadding / pixelStride,
-                            mHeight,
-                            Bitmap.Config.ARGB_8888
-                        )
+                        if (bitmap == null) {
+                            // create bitmap
+                            bitmap = Bitmap.createBitmap(
+                                mWidth + rowPadding / pixelStride,
+                                mHeight,
+                                Bitmap.Config.ARGB_8888
+                            )
+                        }
+
                         bitmap!!.copyPixelsFromBuffer(buffer)
 
-                        val hash = Hash.dHash(bitmap, true)
+                        val hash = Hash.aHash(bitmap!!)
                         //记录平均1s大卡顿相关数据
                         if (hash == lastHash) {
                             //跟上次的hash相等
@@ -112,15 +115,11 @@ class ScreenCaptureService : Service() {
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-            } finally {
-                if (bitmap != null) {
-                    bitmap!!.recycle()
-                }
             }
         }
     }
 
-    private inner class OrientationChangeCallback internal constructor(context: Context?) :
+    private inner class OrientationChangeCallback(context: Context?) :
         OrientationEventListener(context) {
         override fun onOrientationChanged(orientation: Int) {
             val rotation = mDisplay!!.rotation
@@ -142,12 +141,13 @@ class ScreenCaptureService : Service() {
 
     private inner class MediaProjectionStopCallback : MediaProjection.Callback() {
         override fun onStop() {
-            Log.e(TAG, "stopping projection.")
+            Log.e(TAG, "on stopping projection.")
             mHandler!!.post {
-                if (mVirtualDisplay != null) mVirtualDisplay!!.release()
-                if (mImageReader != null) mImageReader!!.setOnImageAvailableListener(null, null)
-                if (mOrientationChangeCallback != null) mOrientationChangeCallback!!.disable()
-                mMediaProjection!!.unregisterCallback(this@MediaProjectionStopCallback)
+                mVirtualDisplay?.release()
+                mImageReader?.setOnImageAvailableListener(null, null)
+                mOrientationChangeCallback?.disable()
+                mMediaProjection?.unregisterCallback(this@MediaProjectionStopCallback)
+                bitmap?.recycle()
             }
         }
     }
@@ -168,37 +168,14 @@ class ScreenCaptureService : Service() {
         super.onCreate()
         Log.i(TAG, "onCreate: ")
 
-        // create store dir
-//        val externalFilesDir = getExternalFilesDir(null)
-//        if (externalFilesDir != null) {
-//            mStoreDir = externalFilesDir.absolutePath + "/screenshots/"
-//            val storeDirectory = File(mStoreDir!!)
-//            if (!storeDirectory.exists()) {
-//                val success = storeDirectory.mkdirs()
-//                if (!success) {
-//                    Log.e(TAG, "failed to create file storage directory.")
-//                    stopSelf()
-//                }
-//            }
-//        } else {
-//            Log.e(TAG, "failed to create file storage directory, getExternalFilesDir is null.")
-//            stopSelf()
-//        }
-
         // start capture handling thread
         object : Thread() {
             override fun run() {
                 Looper.prepare()
-                mHandler = Handler()
+                mHandler = Handler(Looper.myLooper()!!)
                 Looper.loop()
             }
         }.start()
-    }
-
-    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
-        Log.i(TAG, "onStartCommand: ")
-
-        return super.onStartCommand(intent, flags, startId)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -267,13 +244,13 @@ class ScreenCaptureService : Service() {
     private fun calFps() {
         val dur = (System.currentTimeMillis() - startTime) / 1000
         val fps = frameCount / dur
-        tvAllFrame?.text = "All Frames=$frameCount"
+        tvAllFrame?.text =
+            String.format(getString(R.string.frame_result), frameCount, bigFreezeCount.toInt())
         frameCount = 0
         //计算平均一秒大卡顿次数
         //总大卡顿次数 / 总时间
-        val freezeRate = bigFreezeCount / dur
-        Log.i(TAG, "calFps: bigFreezecount$bigFreezeCount")
-        tvFps?.text = "FPS=$fps/$freezeRate"
+        val freezeRate = (bigFreezeCount / dur)
+        tvFps?.text = String.format(getString(R.string.fps_result), fps, freezeRate)
     }
 
     private fun initTimer() {
@@ -289,7 +266,6 @@ class ScreenCaptureService : Service() {
             timer?.cancel()
             timer?.purge()
             timer = null
-            tvDuration?.text = "00:00"
             second = 0
             return
         }
@@ -333,12 +309,10 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopProjection() {
-//        mHandler?.post {
-//            mMediaProjection?.stop()
-//        }
         mMediaProjection?.stop()
     }
 
+    @SuppressLint("WrongConstant")
     private fun createVirtualDisplay() {
         // get width and height
         mWidth = Resources.getSystem().displayMetrics.widthPixels
@@ -367,6 +341,6 @@ class ScreenCaptureService : Service() {
         }
 
         private val virtualDisplayFlags: Int
-            private get() = DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
+            get() = DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
     }
 }

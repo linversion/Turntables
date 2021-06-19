@@ -7,4 +7,6 @@
     <string name="start_recording">Start Recording</string>
     <string name="stop_recording">Stop Recording</string>
     <string name="recording">Recording</string>
+    <string name="fps_result">FPS=%1$d/%2$.2f</string>
+    <string name="frame_result">All Frames=%1$d big freezeCount=%2$d</string>
 </resources>
