@@ -9,7 +9,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
-import android.widget.Button
 import android.widget.Toast
 
 class ScreenCaptureActivity : Activity() {
@@ -29,15 +28,7 @@ class ScreenCaptureActivity : Activity() {
     /****************************************** Activity Lifecycle methods  */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        // start projection
-        val startButton = findViewById<Button>(R.id.startButton)
-        startButton.setOnClickListener { startProjection() }
-
-        // stop projection
-        val stopButton = findViewById<Button>(R.id.stopButton)
-        stopButton.setOnClickListener { stopProjection() }
+        startProjection()
     }
 
     override fun onDestroy() {
@@ -68,7 +59,7 @@ class ScreenCaptureActivity : Activity() {
     /****************************************** UI Widget Callbacks  */
     private fun startProjection() {
         val mProjectionManager =
-                getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         startActivityForResult(mProjectionManager.createScreenCaptureIntent(), REQUEST_CODE)
     }
 
@@ -81,7 +72,12 @@ class ScreenCaptureActivity : Activity() {
         //判断是否有悬浮窗权限
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "当前无悬浮窗权限，请授权", Toast.LENGTH_SHORT).show()
-            startActivityForResult(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")), REQUEST_OVERLAY)
+            startActivityForResult(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                ), REQUEST_OVERLAY
+            )
         } else {
             ScreenCaptureService.start(this, serviceConnection, resultCode, data)
         }
